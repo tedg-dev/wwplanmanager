@@ -1,0 +1,1116 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mx:WindowedApplication
+	xmlns:mx="http://www.adobe.com/2006/mxml"
+	xmlns:dataGridClasses="com.edison.controls.dataGridClasses.*" 
+	xmlns:local="*" 
+	layout="absolute"
+	width="1100" height="900"
+	applicationComplete="onApplicationComplete()"
+	creationComplete="creationCompleteHandler(event)">
+	
+
+	<mx:Script>
+		<![CDATA[
+			import mx.collections.ArrayCollection;
+			import mx.collections.Sort;
+			import mx.collections.SortField;
+			import mx.controls.Alert;
+			import mx.events.CollectionEvent;
+			import mx.events.DragEvent;
+			import mx.events.FlexEvent;
+			import mx.events.ListEvent;
+			import mx.formatters.DateFormatter;
+			import mx.utils.StringUtil;
+
+
+			private static const MSEC_PER_MINUTE:int = 1000 * 60; 
+			private static const MSEC_PER_HOUR:int = 1000 * 60 * 60; 
+			private static const MSEC_PER_DAY:int = 1000 * 60 * 60 * 24;
+
+			private static const CURRENT_AGE:int = 52;
+			private static const CURRENT_WEIGHT:int = 200;
+
+			private static const DAILY_POINTS_TARGET:int = 39;
+			private static const MAX_ACTIVITY_POINTS_PER_WEEK:int = 16;
+
+
+			[Bindable]
+			public var localWwDataAC:ArrayCollection = new ArrayCollection();
+
+			[Bindable]
+			private var allFoodDataAC:ArrayCollection = new ArrayCollection();
+/*
+			private var allFoodDataAC:ArrayCollection = new ArrayCollection([
+				{name:"Abalone", quantity:"3 oz", points:"2", favorite:false},
+				{name:"Adobo Sauce (store-bought)", quantity:"1 tbsp", points:"2", favorite:false},
+				{name:"Alfredo Sauce (store-bought)", quantity:"1/2 cup", points:"10", favorite:false},
+			]);
+*/
+			[Bindable]
+			private var activityDataAC:ArrayCollection = new ArrayCollection();
+
+			[Bindable]
+			private var weeklyAllDayDataAC:ArrayCollection = new ArrayCollection();
+
+			[Bindable]
+			private var morningDataAC:ArrayCollection = new ArrayCollection();
+			[Bindable]
+			private var middayDataAC:ArrayCollection = new ArrayCollection();
+			[Bindable]
+			private var eveningDataAC:ArrayCollection = new ArrayCollection();
+
+			[Embed(source="assets/trashcan.jpeg")]
+			[Bindable]
+			public var trashDataImage:Class;
+
+			[Bindable]
+			private var trashData:ArrayCollection = new ArrayCollection([trashDataImage]);
+
+			[Bindable]
+			private var ttlMorningPoints:int = 0;
+			[Bindable]
+			private var ttlMiddayPoints:int = 0;
+			[Bindable]
+			private var ttlEveningPoints:int = 0;
+			[Bindable]
+			private var dailyPointsTtl:int = ttlMorningPoints + ttlMiddayPoints + ttlEveningPoints;
+			[Bindable]
+			private var dailyTargetPoints:int = 39;		// Overall daily target points total - calc'd on appComplete
+			[Bindable]
+			private var totalWeeklyRemaining:int = 0;
+
+			[Bindable]
+			private var activityPointsRemainingCount:int = MAX_ACTIVITY_POINTS_PER_WEEK;	// Activity Points Remaining counter
+			[Bindable]
+			private var activityPointsEarnedCount:int = 0;
+			
+			[Bindable]
+			private var currentDate:Date = new Date();	// Today's date
+
+
+			public var lSoWwData:LSOHandler;
+			public var lSoWwWeeklyData:LSOHandler;
+			public var lSoWwActivityData:LSOHandler;
+
+			private var currentDF:DateFormatter = new DateFormatter();
+
+			private var dayOfWeekNames:Array = [ 'Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat' ];
+
+
+
+			///////////////////////////////////////////////////////////////////
+			//
+			public function onApplicationComplete():void
+			{
+				// Center AIR application in current screen
+				nativeWindow.x = (Capabilities.screenResolutionX - nativeWindow.width) / 2;
+				nativeWindow.y = (Capabilities.screenResolutionY - nativeWindow.height) / 2;
+				trace("onApplicationComplete(): getDayOfWeekIndex() = " + getDayOfWeekIndex());
+
+				activityDataAC.addEventListener(CollectionEvent.COLLECTION_CHANGE, activityData_collectionChange);
+			}
+
+			///////////////////////////////////////////////////////////////////
+			//
+			protected function creationCompleteHandler(event:FlexEvent):void
+			{
+				currentDF.formatString = "EEEE";
+				dateFieldDay.text = currentDF.format(currentDate);
+
+				// Create StorageObject handlers for local data storage
+				lSoWwData = new LSOHandler("WWPlanManagerData");
+				lSoWwWeeklyData = new LSOHandler("WWTrackerWeeklyData");
+				lSoWwActivityData = new LSOHandler("WWTrackerActivityData");
+				
+				if (lSoWwData.getObjects()) {
+					// Need to get to first element of lso object ArrayCollection, which holds allFoodData AC
+					allFoodDataAC = lSoWwData.getObjects()[0];
+					filterFavoritesGrid(null);
+				}
+				if (lSoWwWeeklyData.getObjects()) {
+					// Need to get to first element of lso object ArrayCollection, which holds weeklyAllDayData AC
+					weeklyAllDayDataAC = lSoWwWeeklyData.getObjects()[0];
+					assignDailyACs();
+				}
+				if (lSoWwActivityData.getObjects()) {
+					// Need to get to first element of lso object ArrayCollection, which holds activityDataAC
+					activityDataAC = lSoWwActivityData.getObjects()[0];
+					updateActivityPointsCounts();
+				}
+			}
+
+			///////////////////////////////////////////////////////////////////
+			// Updates new food data to lSoWwData Storage Object
+			//
+			private function updateWwDataToLSO():void {
+
+				// Re-sort array contents
+				/* Create the SortField object for the "data" field in the ArrayCollection object, and make sure we do a numeric sort. */
+				// Initialize SortField objects for all valid sort fields:
+				//  A true second parameter specifies a case-insensitive sort.
+				//  A true third parameter specifies descending sort order.
+				//  A true fourth parameter specifies a numeric sort.
+				var dataSortField:SortField = new SortField("name", true, false);
+
+				/* Create the Sort object and add the SortField object created earlier to the array of fields to sort on. */
+				var sort:Sort = new Sort();
+				sort.fields = [dataSortField];
+				/* Set the ArrayCollection object's sort property to our custom sort, and refresh the ArrayCollection. */
+				allFoodDataAC.sort = sort;
+				allFoodDataAC.refresh();
+
+				// add object to store in the LSO.
+				lSoWwData.replaceObject(allFoodDataAC);
+			}
+
+			///////////////////////////////////////////////////////////////////
+			// Updates weekly data to lSoWwWeeklyData Storage Object
+			//
+			private function updateWwWeeklyDataToLSO():void {
+				var dayOfWeekIdx:int = getDayOfWeekIndex();
+				
+				// The weeklyAllDayDataAC array is 7 days worth of data based on the daysOfTheWeek (Sun-Sat)
+					// and includes morning, midday, evening next to each other 
+					// (Sun=0,1,2; Mon=3,4,5; Tue=6,7,8; Wed=9,10,11; Thu=12,13,14; Fri=15,16,17; Sat=18,19,20)
+				// The current three DataACs are to be set to their current day's weeklyDataAC
+				weeklyAllDayDataAC[(dayOfWeekIdx * 3)]		= morningDataAC;
+				weeklyAllDayDataAC[(dayOfWeekIdx * 3) + 1]	= middayDataAC;
+				weeklyAllDayDataAC[(dayOfWeekIdx * 3) + 2]	= eveningDataAC;
+
+				calculateWeeklyRemaining();
+
+				// add object to store in the LSO.
+				lSoWwWeeklyData.replaceObject(weeklyAllDayDataAC);
+			}
+
+
+			///////////////////////////////////////////////////////////////////
+			//
+			private function assignDailyACs():void
+			{
+				// Reset the DataACs from weeklyAllDayDataAC (true flag)
+				resetDataACs(true);
+
+				var compObj:Object;
+				ttlMorningPoints = 0;
+				for each (compObj in morningDataAC) {
+					ttlMorningPoints += parseInt(compObj.points);
+				}
+				ttlMiddayPoints = 0;
+				for each (compObj in middayDataAC) {
+					ttlMiddayPoints += parseInt(compObj.points);
+				}
+				ttlEveningPoints = 0;
+				for each (compObj in eveningDataAC) {
+					ttlEveningPoints += parseInt(compObj.points);
+				}
+				dailyPointsTtl = ttlMorningPoints + ttlMiddayPoints + ttlEveningPoints;
+				trace("assignDailyACs:  updated dailyPointsTtl to " + dailyPointsTtl);
+
+				calculateWeeklyRemaining();
+			}
+
+			///////////////////////////////////////////////////////////////////
+			//
+			private function calculateWeeklyRemaining():void
+			{
+				totalWeeklyRemaining = dailyTargetPoints * 7;
+
+				for (var acIndex:int = 0; acIndex < 7; acIndex++) {
+					var compObj:Object;
+					for each (compObj in weeklyAllDayDataAC[(acIndex * 3)]) {
+						totalWeeklyRemaining -= parseInt(compObj.points);
+					}
+					for each (compObj in weeklyAllDayDataAC[(acIndex * 3) + 1]) {
+						totalWeeklyRemaining -= parseInt(compObj.points);
+					}
+					for each (compObj in weeklyAllDayDataAC[(acIndex * 3) + 2]) {
+						totalWeeklyRemaining -= parseInt(compObj.points);
+					}
+				}
+				// Weekly Remaining
+				trace("calculateWeeklyRemaining:  weeklyRemainingMax = " + (dailyTargetPoints * 7) + ", updated weeklyRemainingLabel.text to " + totalWeeklyRemaining);
+			}
+
+			///////////////////////////////////////////////////////////////////
+			//
+			private function activityData_collectionChange(evt:CollectionEvent):void {
+				trace("activityData_collectionChange(): entered");
+				// This is required because of the SummaryDataGrid custom component, to update the Total at the bottom
+				var dataAC:ArrayCollection = new ArrayCollection();
+				dataAC = activityDataAC;
+				activityDG.dataProvider = dataAC;
+			}
+
+
+
+			///////////////////////////////////////////////////////////////////
+			//
+			private function dataGridMorning_collectionChange(evt:CollectionEvent):void {
+				var compObj:Object;
+				ttlMorningPoints = 0;
+				for each (compObj in morningDataAC) {
+					ttlMorningPoints += parseInt(compObj.points);
+				}
+				trace("dataGridMorning_collectionChange:  updated ttlMorningPoints to " + ttlMorningPoints);
+				dailyPointsTtl = ttlMorningPoints + ttlMiddayPoints + ttlEveningPoints;
+				
+				// Clear out the Trash
+				trashData.removeAll();
+				trashData =  new ArrayCollection([trashDataImage]);
+				trashDG.dataProvider = trashData;
+
+				// Need to update the weekly data to the Storage Object
+				updateWwWeeklyDataToLSO();
+			}
+
+			///////////////////////////////////////////////////////////////////
+			//
+			private function dataGridMidday_collectionChange(evt:CollectionEvent):void {
+				var compObj:Object;
+				ttlMiddayPoints = 0;
+				for each (compObj in middayDataAC) {
+					ttlMiddayPoints += parseInt(compObj.points);
+				}
+				trace("dataGridMidday_collectionChange:  updated ttlMiddayPoints to " + ttlMiddayPoints);
+				dailyPointsTtl = ttlMorningPoints + ttlMiddayPoints + ttlEveningPoints;
+				
+				// Clear out the Trash
+				trashData.removeAll();
+				trashData =  new ArrayCollection([trashDataImage]);
+				trashDG.dataProvider = trashData;
+				
+				// Need to update the weekly data to the Storage Object
+				updateWwWeeklyDataToLSO();
+			}
+
+			///////////////////////////////////////////////////////////////////
+			//
+			private function dataGridEvening_collectionChange(evt:CollectionEvent):void {
+				var compObj:Object;
+				ttlEveningPoints = 0;
+				for each (compObj in eveningDataAC) {
+					ttlEveningPoints += parseInt(compObj.points);
+				}
+				trace("dataGridEvening_collectionChange:  updated ttlEveningPoints to " + ttlEveningPoints);
+				dailyPointsTtl = ttlMorningPoints + ttlMiddayPoints + ttlEveningPoints;
+				
+				// Clear out the Trash
+				trashData.removeAll();
+				trashData =  new ArrayCollection([trashDataImage]);
+				trashDG.dataProvider = trashData;
+				
+				// Need to update the weekly data to the Storage Object
+				updateWwWeeklyDataToLSO();
+			}
+
+
+			///////////////////////////////////////////////////////////////////
+			//Filter Whole Datagrid by user inputed text
+			private function filterGrid(event:Event):void {
+				/* To get this function to work, only edit variables filterText, columnArray, gridDataProvider, and dataGridName. 
+				   Everything else is dynamic. Do not edit variable names. */
+				var filterText:String = StringUtil.trim(txtFilter.text.toLowerCase()); //Trimmed text String to filter by
+//				{name:"Shells, jumbo, dry", quantity:"3", points:"2", favorite:false},
+				var columnArray:Array = ['name','quantity','points']; //Datagrid column names to filter on
+				var gridDataProvider:ArrayCollection = allFoodDataAC; //Name of datagrid's dataprovider. In this case e.g. databases
+				var dataGridName:String = 'foodsDG'; //Name of the datagrid you are filtering by
+				
+				//Do not edit code past this point
+				var filteredData:Array = [];
+				var added:Boolean=false;
+				var i:int;
+				var j:int;
+				
+				// Loop Through Grid
+				for (i = 0; i < gridDataProvider.length; i++) {    
+					added = false;
+					
+					//Loop through grid column
+					for (j=0; j < columnArray.length; j++) {            
+						if (gridDataProvider[i][columnArray[j]] != null) {
+							
+							//Grab datagrid cell contents, trim it, and convert to lowercase for comparison.
+							var filterString:String = gridDataProvider[i][columnArray[j]].toString().toLowerCase();
+							
+							//Compare the datagrid string(filterString) to the user typed string(filterText).  
+							if (!added) {      
+								//If the datagrid string matches the users string, put it into the array.
+								if (filterString.indexOf(filterText) != -1) {
+									filteredData.push(gridDataProvider[i]);
+									added = true;
+								} 
+							} else {
+								//Do nothing, break out.
+								break;
+							}
+						}    
+					}
+				}
+				
+				//Set datagrid dataprovider
+				if (filterText.length == 0) {
+					this[dataGridName].dataProvider = gridDataProvider;	//Display the original unfiltered data
+				} else {
+					this[dataGridName].dataProvider = filteredData;		//Push the filtered data into the datagrid
+				}
+			}
+
+			///////////////////////////////////////////////////////////////////
+			// Filter Favorites Datagrid by 'favorites' and user inputed text
+			//
+			private function filterFavoritesGrid(event:Event):void {
+				/* To get this function to work, only edit variables filterText, columnArray, gridDataProvider, and dataGridName. 
+				Everything else is dynamic. Do not edit variable names. */
+				var filterText:String = StringUtil.trim(txtFavoritesFilter.text.toLowerCase()); //Trimmed text String to filter by
+//				{name:"Shells, jumbo, dry", quantity:"3", points:"2", favorite:false},
+				var columnArray:Array = ['name','quantity','points','favorite']; //Datagrid column names to filter on
+				var gridDataProvider:ArrayCollection = allFoodDataAC; //Name of datagrid's dataprovider. In this case e.g. databases
+				var dataGridName:String = 'favoritesDG'; //Name of the datagrid you are filtering by
+				
+				//Do not edit code past this point
+				var favoritesData:Array = [];
+				var filteredData:Array = [];
+				var added:Boolean = false;
+				var i:int;
+				var j:int;
+				
+				// Create Favorites datagrid
+				for (i=0; i < gridDataProvider.length; i++) {    
+					// Grab datagrid cell content for 'favorite' for comparison.
+					var bFavoriteSelected:Boolean = gridDataProvider[i][columnArray[3]];
+					
+					//If the datagrid 'favorite' is set, put it into the favorites array.
+					if (bFavoriteSelected) {
+						favoritesData.push(gridDataProvider[i]);
+					}
+				}
+
+				// Loop Through Grid
+				for (i = 0; i < favoritesData.length; i++) {    
+					added = false;
+					
+					//Loop through grid column
+					for (j=0; j < columnArray.length; j++) {            
+						if (favoritesData[i][columnArray[j]] != null) {
+							
+							//Grab datagrid cell contents, trim it, and convert to lowercase for comparison.
+							var filterString:String = favoritesData[i][columnArray[j]].toString().toLowerCase();
+							
+							//Compare the datagrid string(filterString) to the user typed string(filterText).  
+							if (!added) {      
+								//If the datagrid string matches the users string, put it into the array.
+								if (filterString.indexOf(filterText) != -1) {
+									filteredData.push(favoritesData[i]);
+									added = true;
+								} 
+							} else {
+								//Do nothing, break out.
+								break;
+							}
+						}    
+					}
+				}
+				//Set datagrid dataprovider
+				this[dataGridName].dataProvider = filteredData;		//Push the filtered data into the datagrid
+			}
+
+		]]>
+	</mx:Script>
+
+	<mx:Script>
+		<![CDATA[
+			import mx.events.IndexChangedEvent;
+			
+			
+			///////////////////////////////////////////////////////////////////
+			//
+			protected function PointsPlus_clickHandler(event:Event):void
+			{
+				// TODO Auto-generated method stub
+				trace("PointsPlus_clickHandler:  Entered");
+			}
+			
+			///////////////////////////////////////////////////////////////////
+			//
+			public function myButton_clickHandler(event:Event):void
+			{
+				trace("myButton_clickHandler: Entered");
+			}
+			
+			///////////////////////////////////////////////////////////////////
+			//
+			protected function calculateButton_clickHandler(event:MouseEvent):void
+			{
+				// Obtained from online calculator
+				var points:Number = (parseInt(ppProtein.text) / 10.94)
+					+ (parseInt(ppCarbs.text) / 9.17)
+					+ (parseInt(ppFat.text) / 3.89)
+					- (parseInt(ppFiber.text) / 12.49);
+				ppPointsCalculated.text = String(Math.round(points));
+			}
+			
+			///////////////////////////////////////////////////////////////////
+			//
+			protected function calculateDailyTargetButton_clickHandler(event:MouseEvent):void
+			{
+				// Obtained from online calculator
+				var a:Number = parseInt(dtAge.text);
+				var h:Number = parseInt(dtHeight.text) * .0254;
+				var w:Number = parseInt(dtWeight.text) * .45359237
+				
+				var dailyTarget:Number = 864-(9.72*a);
+				dailyTarget += 1.12 * ((14.2 * w) + (503 * h));
+				dailyTarget = ((dailyTarget * .9) + 200) - 1000;
+				if (dailyTarget < 1000)
+					dailyTarget = 1000;
+				dailyTarget = Math.round(dailyTarget/35) - 11;
+				if (dailyTarget < 29)
+					dailyTarget = 29;
+				if (dailyTarget > 71)
+					dailyTarget = 71;
+				dtTargetCalculated.text = String(Math.round(dailyTarget));
+				dailyTargetPoints = parseInt(dtTargetCalculated.text);
+			}
+			
+			
+			///////////////////////////////////////////////////////////////////
+			//
+			protected function calculateActivityPointsButton_clickHandler(event:MouseEvent):void
+			{
+				var factor:Number = 0;
+				var actPts:Number = 0;
+				var weight:Number = parseInt(aWeight.text);
+				var duration:Number = parseInt(aDuration.text);
+				var level:String = aLevelCB.selectedItem.data.toString();
+				var plan:String = 'orig';	// orig seems to be correct:  ptsplus is too high - see http://www.weightwatchers.com/plan/jnl/actPointCalc.aspx
+				if (plan == 'ptsplus' && level == 'low') 
+				{factor = 0.00033;}
+				else if (plan == 'ptsplus' && level == 'mod') 
+				{factor = 0.00047;}
+				else if (plan == 'ptsplus' && level == 'high') 
+				{factor = 0.00117;}
+				else if (plan == 'orig' && level == 'low') 
+				{factor = 0.0002332;}
+				else if (plan == 'orig' && level == 'mod') 
+				{factor = 0.000327;}
+				else if (plan == 'orig' && level == 'high') 
+				{factor = 0.0008077;}
+				else 
+				{factor = 0.0}
+				actPts = (weight * duration * factor);
+				aPointsCalculated.text = String(Math.round(actPts));
+			}
+
+			///////////////////////////////////////////////////////////////////
+			//
+			protected function addActivityPointsButton_clickHandler(event:MouseEvent):void
+			{
+				if (aPointsCalculated.text == "") {
+					mx.controls.Alert.show("Calculate Activity Points before trying to Add.", "Error");
+					return;
+				}
+				var newArrayItem:Object = new Object();
+				newArrayItem.description = aDescription.text;
+				newArrayItem.day = activityDateFieldDay.text;
+				newArrayItem.points = parseInt(aPointsCalculated.text);
+
+				activityDataAC.addItem(newArrayItem);
+				aPointsCalculated.text = "";
+
+				updateActivityPointsCounts();
+			}
+
+			///////////////////////////////////////////////////////////////////
+			//
+			protected function updateActivityPointsCounts():void
+			{
+				// Update total activity points
+				var pointsCount:int = 0;
+				
+				for (var acIndex:int = 0; acIndex < activityDataAC.length; acIndex++) {
+					pointsCount += activityDataAC[acIndex].points;
+				}
+				activityPointsEarnedCount = pointsCount;
+				if (MAX_ACTIVITY_POINTS_PER_WEEK - activityPointsEarnedCount >= 0) {
+					activityPointsRemainingCount = MAX_ACTIVITY_POINTS_PER_WEEK - activityPointsEarnedCount;
+				}
+				else {
+					activityPointsEarnedCount = MAX_ACTIVITY_POINTS_PER_WEEK;
+					activityPointsRemainingCount = 0;
+				}
+				// add object to store in the LSO.
+				lSoWwActivityData.replaceObject(activityDataAC);
+			}
+
+
+
+			///////////////////////////////////////////////////////////////////
+			//
+			protected function favTabNav_changeHandler(event:IndexChangedEvent):void
+			{
+				if (event.newIndex == 0) {
+					trace("favTabNav_changeHandler: Favorites tab clicked");
+					// Reload favorites data
+					filterFavoritesGrid(null);
+				}
+				else if (event.newIndex == 1) {
+					trace("favTabNav_changeHandler: All Foods tab clicked");
+					// Reload all food data
+					filterGrid(null);
+				}
+				updateWwDataToLSO()
+			}
+			
+			
+			
+			///////////////////////////////////////////////////////////////////
+			//
+			protected function addNewFoodItemButton_clickHandler(event:MouseEvent):void
+			{
+				var dataObj:Object = { name:newFoodName.text, quantity:newFoodQuantity.text, points:newFoodPoints.text, favorite:newFoodFavorite.selected };
+				allFoodDataAC.addItem(dataObj);
+				
+				// Reset new food items
+				newFoodName.text = "";
+				newFoodQuantity.text = "";
+				newFoodPoints.text = "";
+				newFoodFavorite.selected = false;
+			}
+
+			///////////////////////////////////////////////////////////////////
+			//
+			protected function deleteFoodItemButton_clickHandler(event:MouseEvent):void
+			{
+				var index:int = allFoodDataAC.getItemIndex(foodsDG.selectedItem);
+				allFoodDataAC.removeItemAt(index);
+				allFoodDataAC.refresh();
+			}
+
+
+			///////////////////////////////////////////////////////////////////
+			//
+			protected function dateLeftButton_clickHandler(event:MouseEvent):void
+			{
+				trace("dateLeftButton_clickHandler():  currentDate = " + currentDate);
+				// subtract 1 day to the currentDate 
+				currentDate = new Date(currentDate.getTime() - MSEC_PER_DAY);
+				dateFieldDay.text = currentDF.format(currentDate);
+
+				assignDailyACs();
+			}
+
+			///////////////////////////////////////////////////////////////////
+			//
+			protected function dateRightButton_clickHandler(event:MouseEvent):void
+			{
+				trace("dateRightButton_clickHandler():  currentDate = " + currentDate);
+				// add 1 day to the currentDate 
+				currentDate = new Date(currentDate.getTime() + MSEC_PER_DAY);
+				dateFieldDay.text = currentDF.format(currentDate);
+
+				assignDailyACs();
+			}
+
+
+			///////////////////////////////////////////////////////////////////
+			// Event handler for the Halo DateField change event.
+			//
+			private function dateChangedHandler(date:Date):void
+			{
+				trace("dateChangedHandler():  currentDate = " + currentDate + ", dateChanged = " + date);
+				if (date == null)
+					return;
+				currentDate = date;
+				dateFieldDay.text = currentDF.format(currentDate);
+
+				assignDailyACs();
+			}
+
+			///////////////////////////////////////////////////////////////////
+			// Event handler for the activity DateField change event.
+			//
+			private function activityDateChangedHandler(date:Date):void
+			{
+				trace("activityDateChangedHandler():  currentDate = " + currentDate + ", dateChanged = " + date);
+				if (date == null)
+					return;
+				currentDate = date;
+				activityDateFieldDay.text = currentDF.format(currentDate);
+			}
+
+
+
+			///////////////////////////////////////////////////////////////////
+			//
+			private function getDayOfWeekIndex():int
+			{
+				var index:int = -1;
+				for (var i:int = 0; i < dayOfWeekNames.length; i++) {
+					if (dateFieldDay.text.indexOf(dayOfWeekNames[i]) != -1)
+						index = i;
+				}
+				return index;
+			}
+
+			///////////////////////////////////////////////////////////////////
+			//
+			protected function clearTodayButton_clickHandler(event:MouseEvent):void
+			{
+				resetDataACs();
+			}
+
+			///////////////////////////////////////////////////////////////////
+			//
+			protected function clearWeekButton_clickHandler(event:MouseEvent):void
+			{
+				weeklyAllDayDataAC.removeAll();
+				for (var i:int = 0; i<21; i++) {
+					weeklyAllDayDataAC.addItem(new ArrayCollection());
+				}
+				resetDataACs();
+			}
+
+			///////////////////////////////////////////////////////////////////
+			//
+			protected function resetDataACs(bFromWeeklyAllDayData:Boolean = false):void
+			{
+				// Remove existing eventListeners
+				morningDataAC.removeEventListener(CollectionEvent.COLLECTION_CHANGE, dataGridMorning_collectionChange);
+				middayDataAC.removeEventListener(CollectionEvent.COLLECTION_CHANGE, dataGridMidday_collectionChange);
+				eveningDataAC.removeEventListener(CollectionEvent.COLLECTION_CHANGE, dataGridEvening_collectionChange);
+				if (bFromWeeklyAllDayData) {
+					var dayOfWeekIdx:int = getDayOfWeekIndex();
+					// The weeklyAllDayDataAC array is 7 days worth of data based on the daysOfTheWeek (Sun-Sat)
+						// and includes morning, midday, evening next to each other 
+						// (Sun=0,1,2; Mon=3,4,5; Tue=6,7,8; Wed=9,10,11; Thu=12,13,14; Fri=15,16,17; Sat=18,19,20)
+					// The current three DataACs are to be set to their current day's weeklyDataAC
+					morningDataAC = weeklyAllDayDataAC[(dayOfWeekIdx * 3)];
+					middayDataAC =  weeklyAllDayDataAC[(dayOfWeekIdx * 3) + 1];
+					eveningDataAC = weeklyAllDayDataAC[(dayOfWeekIdx * 3) + 2];
+				}
+				else {
+					morningDataAC = new ArrayCollection();
+					middayDataAC = new ArrayCollection();
+					eveningDataAC = new ArrayCollection();
+				}
+				// Add new eventListeners
+				morningDataAC.addEventListener(CollectionEvent.COLLECTION_CHANGE, dataGridMorning_collectionChange);
+				middayDataAC.addEventListener(CollectionEvent.COLLECTION_CHANGE, dataGridMidday_collectionChange);
+				eveningDataAC.addEventListener(CollectionEvent.COLLECTION_CHANGE, dataGridEvening_collectionChange);
+				
+				updateWwWeeklyDataToLSO();
+			}
+
+			///////////////////////////////////////////////////////////////////
+			//
+			public function activitySumFunction(col:mx.controls.dataGridClasses.DataGridColumn):String
+			{
+				var n:int = activityDataAC.length;
+				var total:Number = 0;
+				for (var i:int = 0; i < n; i++)
+				{
+					total += activityDataAC[i][col.dataField];
+				}
+				return "Total:  " + total;
+			}
+
+		]]>
+	</mx:Script>
+
+
+
+	<mx:VBox x="0" y="0" width="100%" height="100%" backgroundColor="#eeeeee">
+		<mx:HBox width="100%" verticalAlign="middle">
+			<mx:Spacer width="5"/>
+			<mx:HBox borderStyle="solid" verticalAlign="middle">
+				<mx:Button id="dateLeftButton" label="&lt;" click="dateLeftButton_clickHandler(event)"/>
+				<mx:DateField id="dateFieldDay" change="dateChangedHandler(DateField(event.target).selectedDate)" fontSize="14"/>
+				<mx:Button id="dateRightButton" label="&gt;" click="dateRightButton_clickHandler(event)"/>
+			</mx:HBox>
+			<mx:Spacer width="5"/>
+			<mx:ViewStack width="100%" borderStyle="solid">
+				<mx:HBox width="100%" backgroundColor="#ffffff">
+					<mx:Spacer width="4"/>
+					<mx:VBox height="100%" verticalGap="0" horizontalAlign="center">
+						<mx:Label text="Daily Used" fontWeight="bold"/>
+						<mx:Label text="{dailyPointsTtl}" fontWeight="bold" fontSize="18" color="#ee7711"/>
+					</mx:VBox>
+					<mx:VRule height="45"/>
+					<mx:VBox height="100%" verticalGap="0" horizontalAlign="center">
+						<mx:Label text="Daily Remaining" fontWeight="bold"/>
+						<mx:Label text="{dailyTargetPoints - dailyPointsTtl}" fontWeight="bold" fontSize="18" color="#ee7711"/>
+					</mx:VBox>
+					<mx:VRule height="45"/>
+					<mx:VBox height="100%" verticalGap="0" horizontalAlign="center">
+						<mx:Label text="Weekly Remaining" fontWeight="bold"/>
+						<mx:Label id="weeklyRemainingLabel" text="{totalWeeklyRemaining + activityPointsEarnedCount}" fontWeight="bold" fontSize="18" color="#ee7711"/>
+					</mx:VBox>
+					<mx:VRule height="45"/>
+					<mx:VBox height="100%" verticalGap="0" horizontalAlign="center">
+						<mx:Label text="Activity Earned" fontWeight="bold"/>
+						<mx:Label text="{activityPointsEarnedCount}" fontWeight="bold" fontSize="18" color="#ee7711"/>
+					</mx:VBox>
+					<mx:VRule height="45"/>
+					<mx:VBox height="100%" verticalGap="0" horizontalAlign="center">
+						<mx:Label text="Activity Remaining" fontWeight="bold"/>
+						<mx:Label id="activityRemainingLabel" text="{activityPointsRemainingCount}" fontWeight="bold" fontSize="18" color="#ee7711"/>
+					</mx:VBox>
+					<mx:VRule height="45"/>
+				</mx:HBox>
+			</mx:ViewStack>
+		</mx:HBox>
+		<mx:HBox width="100%" height="100%">
+			<mx:VBox width="100%" height="100%" verticalAlign="top" >
+
+				<mx:HBox width="100%" height="100%">
+					<mx:VBox horizontalAlign="center">
+						<mx:ToggleButtonBar id="toggleButtonBar" horizontalAlign="left"
+											dataProvider="{viewStack}"
+											toggleOnClick="true" 
+											direction="vertical"
+											click="PointsPlus_clickHandler(event)"/>
+
+						<mx:Spacer height="5"/>
+						<mx:TabNavigator id="toolTabNav" width="160" backgroundColor="#eeeeee">
+							<mx:VBox label="PointsPlus" horizontalAlign="center" backgroundColor="#eeeeee">
+								<mx:Form id="ppCalcForm">
+									<mx:FormItem label="Fat (g)">
+										<mx:TextInput id="ppFat" width="30"      text="21"/>
+									</mx:FormItem>
+									<mx:FormItem label="Carbs (g)">
+										<mx:TextInput id="ppCarbs" width="30"    text="51"/>
+									</mx:FormItem>
+									<mx:FormItem label="Fiber (g)">
+										<mx:TextInput id="ppFiber" width="30"    text="3"/>
+									</mx:FormItem>
+									<mx:FormItem label="Protein (g)">
+										<mx:TextInput id="ppProtein" width="30"  text="12"/>
+									</mx:FormItem>
+									<mx:HRule width="100%" height="1"/>
+									<mx:FormItem label="Points" fontSize="12">
+										<mx:TextInput id="ppPointsCalculated" width="30" fontSize="12"/>
+									</mx:FormItem>
+								</mx:Form>
+								<mx:Button label="Calculate" click="calculateButton_clickHandler(event)"/>
+								<mx:Spacer height="5"/>
+							</mx:VBox>
+							<mx:VBox label="Daily Target" horizontalAlign="center" creationComplete="{calculateDailyTargetButton_clickHandler(null);}">
+								<mx:Form id="dtCalcDailyTargetForm">
+									<mx:FormItem label="Age">
+										<mx:TextInput id="dtAge" width="30"      text="{CURRENT_AGE}"/>
+									</mx:FormItem>
+									<mx:FormItem label="Weight (lbs)">
+										<mx:TextInput id="dtWeight" width="30"    text="{CURRENT_WEIGHT}"/>
+									</mx:FormItem>
+									<mx:FormItem label="Height (in)">
+										<mx:TextInput id="dtHeight" width="30"    text="73"/>
+									</mx:FormItem>
+									<mx:HRule width="100%" height="1"/>
+									<mx:FormItem label="Daily Target" fontSize="12">
+										<mx:TextInput id="dtTargetCalculated" width="30" fontSize="12"/>
+									</mx:FormItem>
+								</mx:Form>
+								<mx:Button label="Calculate" click="calculateDailyTargetButton_clickHandler(event)"/>
+								<mx:Spacer height="5"/>
+							</mx:VBox>
+						</mx:TabNavigator>
+
+						<mx:DataGrid id="trashDG" dataProvider="{trashData}" width="50" height="100" dropEnabled="true">
+							<mx:columns>
+								<mx:DataGridColumn headerText="Trash" dataField="icon">
+									<mx:itemRenderer>
+										<mx:Component>
+											<mx:VBox width="50" height="100">
+												<mx:Image source="@Embed(source='assets/trashcan.jpeg')" scaleContent="true" height="70" />
+											</mx:VBox>
+										</mx:Component>
+									</mx:itemRenderer>
+								</mx:DataGridColumn>
+							</mx:columns>
+						</mx:DataGrid>
+					</mx:VBox>
+					
+					<mx:ViewStack id="viewStack" width="100%" height="100%">
+
+						<mx:Canvas label="PointsPlus Tracker" icon="@Embed('assets/book_blue.png')">
+							<mx:TabNavigator id="tabNav" width="100%" height="100%" backgroundColor="#c4d9f1">
+								<!-- Define each panel using a VBox container. -->
+								<mx:VBox label="Food Tracker" width="100%">
+									<mx:HBox width="100%" height="100%">
+										<mx:Spacer width="1"/>
+										<mx:VBox width="67%" height="100%" backgroundColor="white">
+
+											<mx:VBox width="100%">
+												<mx:HBox width="100%" verticalAlign="middle">
+													<mx:Spacer width="10" height="10"/>
+													<mx:Label fontSize="14" fontWeight="bold"
+															  text="Morning"/>
+													<mx:Spacer width="100%"/>
+													<mx:Label fontSize="12" fontWeight="bold"
+															  text="Subtotal:"/>
+													<mx:Label fontSize="12" fontWeight="bold"
+															  text="{ttlMorningPoints}"/>
+													<mx:Spacer width="10" height="10"/>
+												</mx:HBox>
+												<mx:DataGrid id="morningDG" width="100%" dataProvider="{morningDataAC}"
+															 dragEnabled="true" dragMoveEnabled="true" dropEnabled="true"
+															 allowMultipleSelection="true"
+															 headerBackgroundSkin="com.edison.skins.DataGridHeaderBackgroundSkin">
+													<mx:columns>
+														<dataGridClasses:DataGridColumn  headerText="Name" dataField="name" width="300" headerColors="{[0xFF9900,0xFFFFFF]}"/>
+														<dataGridClasses:DataGridColumn  headerText="Quantity" dataField="quantity" headerColors="{[0x99FF00,0xFFFFFF]}"/>
+														<dataGridClasses:DataGridColumn headerText="Fav" dataField="favorite" width="28"
+																		   itemRenderer="mx.controls.CheckBox" 
+																		   rendererIsEditor="true" 
+																		   editorDataField="selected"
+																		   headerColors="{[0x0099FF,0xFFFFFF]}"/>
+														<dataGridClasses:DataGridColumn  headerText="Points" dataField="points" width="48" headerColors="{[0xFF0000,0xFFFFFF]}"/>
+													</mx:columns>
+												</mx:DataGrid>
+											</mx:VBox>
+											<mx:VBox width="100%">
+												<mx:HBox width="100%" verticalAlign="middle">
+													<mx:Spacer width="10" height="10"/>
+													<mx:Label fontSize="14" fontWeight="bold"
+															  text="Midday"/>
+													<mx:Spacer width="100%"/>
+													<mx:Label fontSize="12" fontWeight="bold"
+															  text="Subtotal:"/>
+													<mx:Label fontSize="12" fontWeight="bold"
+															  text="{ttlMiddayPoints}"/>
+													<mx:Spacer width="10" height="10"/>
+												</mx:HBox>
+												<mx:DataGrid id="middayDG" width="100%" dataProvider="{middayDataAC}"
+															 dragEnabled="true" dragMoveEnabled="true" dropEnabled="true"
+															 allowMultipleSelection="true"
+															 headerBackgroundSkin="com.edison.skins.DataGridHeaderBackgroundSkin">
+													<mx:columns>
+														<dataGridClasses:DataGridColumn  headerText="Name" dataField="name" width="300" headerColors="{[0xFF9900,0xFFFFFF]}"/>
+														<dataGridClasses:DataGridColumn  headerText="Quantity" dataField="quantity" headerColors="{[0x99FF00,0xFFFFFF]}"/>
+														<dataGridClasses:DataGridColumn headerText="Fav" dataField="favorite" width="28"
+																		   itemRenderer="mx.controls.CheckBox" 
+																		   rendererIsEditor="true" 
+																		   editorDataField="selected"
+																		   headerColors="{[0x0099FF,0xFFFFFF]}"/>
+														<dataGridClasses:DataGridColumn  headerText="Points" dataField="points" width="48" headerColors="{[0xFF0000,0xFFFFFF]}"/>
+													</mx:columns>
+												</mx:DataGrid>
+											</mx:VBox>
+											<mx:VBox width="100%">
+												<mx:HBox width="100%" verticalAlign="middle">
+													<mx:Spacer width="10" height="10"/>
+													<mx:Label fontSize="14" fontWeight="bold"
+															  text="Evening
+															  "/>
+													<mx:Spacer width="100%"/>
+													<mx:Label fontSize="12" fontWeight="bold"
+															  text="Subtotal:"/>
+													<mx:Label fontSize="12" fontWeight="bold"
+															  text="{ttlEveningPoints}"/>
+													<mx:Spacer width="10" height="10"/>
+												</mx:HBox>
+												<mx:DataGrid id="eveningDG" width="100%" dataProvider="{eveningDataAC}"
+															 dragEnabled="true" dragMoveEnabled="true" dropEnabled="true"
+															 allowMultipleSelection="true"
+															 headerBackgroundSkin="com.edison.skins.DataGridHeaderBackgroundSkin">
+													<mx:columns>
+														<dataGridClasses:DataGridColumn  headerText="Name" dataField="name" width="300" headerColors="{[0xFF9900,0xFFFFFF]}"/>
+														<dataGridClasses:DataGridColumn  headerText="Quantity" dataField="quantity" headerColors="{[0x99FF00,0xFFFFFF]}"/>
+														<dataGridClasses:DataGridColumn headerText="Fav" dataField="favorite" width="28"
+																		   itemRenderer="mx.controls.CheckBox" 
+																		   rendererIsEditor="true" 
+																		   editorDataField="selected"
+																		   headerColors="{[0x0099FF,0xFFFFFF]}"/>
+														<dataGridClasses:DataGridColumn  headerText="Points" dataField="points" width="48" headerColors="{[0xFF0000,0xFFFFFF]}"/>
+													</mx:columns>
+												</mx:DataGrid>
+											</mx:VBox>
+
+											<mx:VBox width="100%" horizontalAlign="right">
+												<mx:HBox horizontalAlign="right">
+													<mx:Label text="Daily PointsPlus values used:" fontSize="12"/>
+													<mx:Label text="{dailyPointsTtl}" fontWeight="bold" fontSize="12"/>
+													<mx:Spacer width="5"/>
+												</mx:HBox>
+												<mx:HBox horizontalAlign="right">
+													<mx:Label text="Daily PointsPlus values remaining:" fontSize="12"/>
+													<mx:Label text="{dailyTargetPoints - dailyPointsTtl}" fontWeight="bold" fontSize="12" color="#ee7711"/>
+													<mx:Spacer width="5"/>
+												</mx:HBox>
+											</mx:VBox>
+
+											<mx:HBox>
+												<mx:Button label="Clear Today" click="clearTodayButton_clickHandler(event)"/>
+												<mx:Button label="Clear This Week" click="clearWeekButton_clickHandler(event)"/>
+											</mx:HBox>
+										</mx:VBox>
+
+										<mx:VBox width="33%" height="100%">
+											<mx:TabNavigator id="favTabNav" width="100%" height="100%" change="favTabNav_changeHandler(event)">
+												<!-- Define each panel using a VBox container. -->
+												<mx:VBox label="Favorites" horizontalAlign="center" width="100%" height="100%" creationComplete="{filterFavoritesGrid(event)}">
+													<mx:HBox>
+														<!--Search Input Box-->
+														<mx:TextInput id="txtFavoritesFilter" width="100%" fontWeight="bold" change="filterFavoritesGrid(event)"/>
+														<!--Search Image-->
+														<mx:Image height="20" source="@Embed('assets/mail_find.png')"/>
+														<mx:Image height="20" source="@Embed('assets/close.png')" click="{txtFavoritesFilter.text = ''; filterFavoritesGrid(event)}"/>
+														<mx:Spacer width="10%"/>
+													</mx:HBox>
+													<mx:DataGrid id="favoritesDG" dataProvider="{allFoodDataAC}" width="270" height="100%"
+																 allowMultipleSelection="true" dragEnabled="true" editable="true">
+														<mx:columns>
+															<mx:DataGridColumn headerText="Favorite Foods" dataField="name" editable="false"/>
+															<mx:DataGridColumn headerText="Fv" dataField="favorite" width="25"
+																			   itemRenderer="favoriteCheckBoxRenderer"
+																			   rendererIsEditor="true"
+																			   editorDataField="selected"/>
+															<mx:DataGridColumn headerText="Pts" dataField="points" width="30" editable="true"/>
+														</mx:columns>
+													</mx:DataGrid>
+												</mx:VBox>
+												<mx:VBox label="All Foods" horizontalAlign="center" width="100%" height="100%">
+													<mx:HBox>
+														<!--Search Input Box-->
+														<mx:TextInput id="txtFilter" width="100%" fontWeight="bold" change="filterGrid(event)"/>
+														<!--Search Image-->
+														<mx:Image height="20" source="@Embed('assets/mail_find.png')"/>
+														<mx:Image height="20" source="@Embed('assets/close.png')" click="{txtFilter.text = ''; filterGrid(event)}"/>
+														<mx:Spacer width="10%"/>
+													</mx:HBox>
+													<mx:DataGrid id="foodsDG" dataProvider="{allFoodDataAC}" width="270" height="100%"
+																 allowMultipleSelection="true" dragEnabled="true" editable="true">
+														<mx:columns>
+															<mx:DataGridColumn headerText="Foods" dataField="name" editable="false"/>
+															<mx:DataGridColumn headerText="Fv" dataField="favorite" width="25"
+																			   itemRenderer="favoriteCheckBoxRenderer" 
+																			   rendererIsEditor="true" 
+																			   editorDataField="selected"/>
+															<mx:DataGridColumn headerText="Pts" dataField="points" width="30" editable="true"/>
+														</mx:columns>
+													</mx:DataGrid>
+													<mx:VBox verticalGap="1">
+														<mx:Form id="addNewFoodForm">
+															<mx:FormItem label="Item">
+																<mx:TextInput id="newFoodName" width="100%"/>
+															</mx:FormItem>
+															<mx:FormItem label="Quantity">
+																<mx:TextInput id="newFoodQuantity" width="100%"/>
+															</mx:FormItem>
+															<mx:FormItem label="Favorite">
+																<mx:CheckBox id="newFoodFavorite" width="25"/>
+															</mx:FormItem>
+															<mx:FormItem label="Points">
+																<mx:TextInput id="newFoodPoints" width="30" fontWeight="bold"/>
+															</mx:FormItem>
+															<mx:HRule width="100%" height="1"/>
+														</mx:Form>
+														<mx:HBox>
+															<mx:Spacer width="90"/>
+															<mx:Button id="newFoodButton" label="Add" click="addNewFoodItemButton_clickHandler(event)"/>
+															<mx:Spacer width="10"/>
+															<mx:Button id="deleteFoodButton" label="Delete" click="deleteFoodItemButton_clickHandler(event)"/>
+														</mx:HBox>
+													</mx:VBox>
+												</mx:VBox>
+											</mx:TabNavigator>
+										</mx:VBox>
+									</mx:HBox>
+								</mx:VBox>
+
+								<mx:VBox label="Activity Tracker" width="100%" paddingTop="5" paddingLeft="10">
+
+									<mx:HBox>
+
+										<mx:VBox label="Activity Points Calculator" horizontalAlign="center" backgroundColor="#eeeeee">
+											<mx:Form id="aCalcForm">
+												<mx:FormItem label="Description">
+													<mx:TextInput id="aDescription" width="100" text="Elliptical"/>
+												</mx:FormItem>
+												<mx:FormItem label="Duration (min)">
+													<mx:TextInput id="aDuration" width="30" text="30"/>
+												</mx:FormItem>
+												<mx:FormItem label="Level">
+													<mx:ComboBox id="aLevelCB" selectedIndex="1"> 
+														<mx:ArrayCollection>
+															<mx:Object label="Low" data="low"/>
+															<mx:Object label="Moderate" data="mod"/>
+															<mx:Object label="High" data="high"/>
+														</mx:ArrayCollection>
+													</mx:ComboBox>
+												</mx:FormItem>
+												<mx:FormItem label="Activity Date">
+													<mx:DateField
+														id="activityDateFieldDay"
+														creationComplete="{activityDateChangedHandler(DateField(event.target).selectedDate)}"
+														selectedDate="{new Date()}"
+														change="{activityDateChangedHandler(DateField(event.target).selectedDate)}"/>
+												</mx:FormItem>
+												<mx:HRule width="100%" height="1"/>
+												<mx:FormItem label="Activity Points" fontSize="12">
+													<mx:TextInput id="aPointsCalculated" width="30" fontSize="12"/>
+												</mx:FormItem>
+												<mx:FormItem label="Weight (lbs)">
+													<mx:TextInput id="aWeight" width="30"   text="{CURRENT_WEIGHT}"/>
+												</mx:FormItem>
+											</mx:Form>
+											<mx:HRule width="100%" height="1"/>
+											<mx:HBox>
+												<mx:Button label="Calculate" click="calculateActivityPointsButton_clickHandler(event)"/>
+												<mx:Button label="Add >" click="addActivityPointsButton_clickHandler(event)"/>
+											</mx:HBox>
+											<mx:Spacer height="5"/>
+										</mx:VBox>
+										
+										<mx:VBox>
+											<local:SummaryDataGrid
+												id="activityDG"
+												initialize="activityDG.dataProvider = activityDataAC"
+												creationComplete="{activityDG.dataProvider = activityDataAC;}"
+												dataProvider="activityDataAC"
+												rowCount="10"
+												allowMultipleSelection="true"
+												paddingTop="0" paddingBottom="0"
+												verticalAlign="middle" >
+												<local:columns>
+													<local:SummaryDataGridColumn headerText="Description" dataField="description" width="140" >
+														<mx:DataGridColumn headerText="Description" dataField="description" />
+													</local:SummaryDataGridColumn>
+													<local:SummaryDataGridColumn headerText="Day" dataField="day" width="100" >
+														<mx:DataGridColumn headerText="Day" dataField="day" />
+													</local:SummaryDataGridColumn>
+													<local:SummaryDataGridColumn headerText="Activity Points" dataField="points" width="100" >
+														<mx:DataGridColumn labelFunction="activitySumFunction" dataField="points" />
+													</local:SummaryDataGridColumn>
+												</local:columns> 
+											</local:SummaryDataGrid>
+											
+											<mx:HBox horizontalAlign="center" width="100%">
+												<mx:Button label="Clear Activity table" click="activityDataAC.removeAll(); updateActivityPointsCounts();"/>
+											</mx:HBox>
+										</mx:VBox>
+
+									</mx:HBox>
+
+								</mx:VBox>
+
+							</mx:TabNavigator>
+
+						</mx:Canvas>
+
+						<mx:Canvas label="Weight Tracker" backgroundColor="haloOrange" icon="@Embed('assets/scales.jpeg')">
+						</mx:Canvas>
+						<mx:Canvas label="Progress Reports" backgroundColor="yellow" icon="@Embed('assets/chart.png')">
+						</mx:Canvas>
+						<mx:Canvas label="Find and Explorer" backgroundColor="haloGreen" icon="@Embed('assets/mail_find.png')">
+						</mx:Canvas>
+						<mx:Canvas label="Recipe Builder" backgroundColor="haloBlue" icon="@Embed('assets/Recipe-Book-icon.png')">
+						</mx:Canvas>
+					</mx:ViewStack>
+				</mx:HBox>
+			</mx:VBox>
+		</mx:HBox>
+	</mx:VBox>
+	
+</mx:WindowedApplication>
