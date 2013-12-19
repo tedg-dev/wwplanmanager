@@ -8,6 +8,7 @@
 	applicationComplete="onApplicationComplete()"
 	creationComplete="creationCompleteHandler(event)">
 	
+<!-- This is just a comment added to test git -->
 
 	<mx:Script>
 		<![CDATA[
