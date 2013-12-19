@@ -25,11 +25,9 @@
 
 
 			private static const MSEC_PER_MINUTE:int = 1000 * 60; 
-			private static const MSEC_PER_HOUR:int = 1000 * 60 * 60; 
-			private static const MSEC_PER_DAY:int = 1000 * 60 * 60 * 24;
-
-			private static const CURRENT_AGE:int = 52;
-			private static const CURRENT_WEIGHT:int = 200;
+			private static const MSEC_PER_HOUR:int = MSEC_PER_MINUTE * 60; 
+			private static const MSEC_PER_DAY:int = MSEC_PER_HOUR * 24;
+			private static const MSEC_PER_WEEK:int = MSEC_PER_DAY * 7;
 
 			private static const DAILY_POINTS_TARGET:int = 39;
 			private static const MAX_ACTIVITY_POINTS_PER_WEEK:int = 16;
